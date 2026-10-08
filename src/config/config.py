@@ -6,12 +6,10 @@
 # Author: mbegma
 # Create data: 09.02.2022
 # Description: 
-# Copyright: (c) Дата+, 2022 - 2026
+# Copyright: (c) mbegma, 2024-2026
 # -----------------------------------------------------
-from os import sep, path, makedirs
 import configparser
 from pathlib import Path
-import json
 
 ROOT_DIR = Path(__file__).parents[2]
 
