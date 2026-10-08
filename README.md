@@ -19,7 +19,7 @@
   - Каскадное удаление (`ON DELETE CASCADE`) и индексы для быстрых аналитических выборок.
 
 - **Аналитика и визуализация:**
-  - Готовый Jupyter Notebook с примерами SQL-запросов и графиков (динамика платежей, сезонность отопления, потребление ресурсов, топ затратных услуг за все время и по годам, распределение категорий по годам).
+  - Готовый Jupyter Notebook с примерами SQL-запросов и графиков (динамика платежей, сезонность отопления, потребление ресурсов, топ затратных услуг за все время и по годам, распределение категорий по годам, годовая динамика Year-over-Year).
 
 ---
 
@@ -221,6 +221,13 @@ JOIN receipts r ON sc.receipt_id = r.id
 JOIN year_totals yt ON r.year = yt.year
 GROUP BY r.year, sc.service_category
 ORDER BY r.year, SUM(sc.total_amount) DESC;
+```
+
+#### 6. Годовая динамика начислений (Year-over-Year помесячно)
+```sql
+SELECT month, year, total_to_pay
+FROM receipts
+ORDER BY month, year;
 ```
 
 ---
