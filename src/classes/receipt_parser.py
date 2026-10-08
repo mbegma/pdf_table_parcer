@@ -46,7 +46,7 @@ def parse_float(val: Any) -> float:
 
 
 class ReceiptParser(BaseClass):
-    _ver = "1.0.0"
+    _ver = "1.1.0"
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -54,7 +54,8 @@ class ReceiptParser(BaseClass):
     def parse_file(self, pdf_path: str) -> Dict[str, Any]:
         """
         Извлекает данные из одной PDF-квитанции:
-        - Лицевой счет, период, ФИО, адрес, общую сумму (без учета добровольного страхования)
+        - Лицевой счет, период, ФИО, адрес, итоговую сумму (без учета добровольного страхования)
+        - Характеристики квартиры и дома (общая/жилая площадь, зарегистрировано/проживает, площади дома и МОП)
         - Список начислений по жилищным, коммунальным и иным услугам.
         """
         path = Path(pdf_path)
@@ -86,6 +87,9 @@ class ReceiptParser(BaseClass):
             if total_to_pay == 0.0:
                 total_to_pay = self._extract_total_from_text(page_text)
 
+            # 3. Извлечение сведений о помещении и многоквартирном доме (МКД)
+            prop_info = self._extract_property_and_building_info(page_text, services)
+
             result = {
                 "source_file": path.name,
                 "account_number": account_number,
@@ -96,13 +100,22 @@ class ReceiptParser(BaseClass):
                 "payer_name": payer_name,
                 "address": address,
                 "total_to_pay": total_to_pay,
+                "total_area": prop_info["total_area"],
+                "living_area": prop_info["living_area"],
+                "registered_count": prop_info["registered_count"],
+                "residents_count": prop_info["residents_count"],
+                "house_total_area": prop_info["house_total_area"],
+                "house_living_area": prop_info["house_living_area"],
+                "house_common_area": prop_info["house_common_area"],
+                "apartment_share": prop_info["apartment_share"],
                 "services": services,
             }
 
             self.set_info(
                 f"Successfully parsed {path.name}: "
                 f"Account={account_number}, Period={period_str}, "
-                f"Total={total_to_pay:.2f} руб., Services count={len(services)}"
+                f"Area={prop_info['total_area']} sq.m, Total={total_to_pay:.2f} руб., "
+                f"Services count={len(services)}"
             )
             return result
 
@@ -110,7 +123,6 @@ class ReceiptParser(BaseClass):
         match = re.search(r"Лицевой\s+счет:\s*([0-9\s\-]+?)(?:Просим|ФИО|\n|$)", text)
         if match:
             return match.group(1).replace(" ", "").strip()
-        # Альтернативный поиск по шаблону номера счета (напр. 32546-580 или 32546580 в начале документа)
         first_num = re.search(r"(\d{5,8})", text)
         return first_num.group(1) if first_num else "UNKNOWN"
 
@@ -126,7 +138,6 @@ class ReceiptParser(BaseClass):
             month_num = MONTHS_RU.get(month_str, 1)
             return month_str, year, month_num
 
-        # Запасной вариант поиска периода в заголовке таблицы
         match_tbl = re.search(r"УСЛУГИ ЗА\s+([а-яА-ЯёЁ]+)\s+(\d{4})", text, re.IGNORECASE)
         if match_tbl:
             month_str = match_tbl.group(1).lower().strip()
@@ -154,14 +165,74 @@ class ReceiptParser(BaseClass):
             return parse_float(match.group(1))
         return 0.0
 
+    def _extract_property_and_building_info(self, text: str, services: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Извлекает сведения о помещении и многоквартирном доме (МКД):
+        - total_area (Площадь общая квартиры, кв.м)
+        - living_area (Площадь жилая квартиры, кв.м)
+        - registered_count (Зарегистрировано, чел.)
+        - residents_count (Проживает, чел.)
+        - house_total_area (Общ. площадь дома, кв.м)
+        - house_living_area (Жилые помещения дома, кв.м)
+        - house_common_area (Места общего пользования, кв.м)
+        - apartment_share (Расчетная доля квартиры в МКД, %)
+        """
+        # 1. Площадь общая квартиры
+        m_tot = re.search(r"Площадь общая:\s*([0-9]+[.,][0-9]+)\s*кв\.?м", text, re.IGNORECASE)
+        total_area = parse_float(m_tot.group(1)) if m_tot else None
+
+        # 2. Площадь жилая квартиры
+        m_liv = re.search(r"Площадь жилая:\s*([0-9]+[.,][0-9]+)\s*кв\.?м", text, re.IGNORECASE)
+        living_area = parse_float(m_liv.group(1)) if m_liv else None
+
+        # 3. Зарегистрировано
+        m_reg = re.search(r"Зарегистрировано:\s*([0-9]+)\s*чел", text, re.IGNORECASE)
+        registered_count = int(m_reg.group(1)) if m_reg else None
+
+        # 4. Проживает
+        m_res = re.search(r"Проживает:\s*([0-9]+)\s*чел", text, re.IGNORECASE)
+        residents_count = int(m_res.group(1)) if m_res else None
+
+        # 5. Общ. площадь дома
+        m_htot = re.search(r"Общ\.?\s*площадь дома:\s*([0-9]+[.,][0-9]+)\s*кв\.?м", text, re.IGNORECASE)
+        house_total_area = parse_float(m_htot.group(1)) if m_htot else None
+
+        # 6. Жилые помещения дома
+        m_hliv = re.search(r"Жилые помещения:\s*([0-9]+[.,][0-9]+)\s*кв\.?м", text, re.IGNORECASE)
+        house_living_area = parse_float(m_hliv.group(1)) if m_hliv else None
+
+        # 7. Места общего пользования
+        m_hcom = re.search(r"Места общего пользования:\s*([0-9]+[.,][0-9]+)\s*кв\.?м", text, re.IGNORECASE)
+        house_common_area = parse_float(m_hcom.group(1)) if m_hcom else None
+
+        # Fallback для площади квартиры из услуг начисления
+        if not total_area:
+            for s in services:
+                if s.get("unit") in ["кв.м.", "кв.м", "м2"] and s.get("volume", 0) > 0:
+                    total_area = s["volume"]
+                    break
+
+        # 8. Расчетная доля квартиры в жилых помещениях МКД (%)
+        apartment_share = None
+        if total_area and house_living_area and house_living_area > 0:
+            apartment_share = round((total_area / house_living_area) * 100.0, 4)
+
+        return {
+            "total_area": total_area,
+            "living_area": living_area,
+            "registered_count": registered_count,
+            "residents_count": residents_count,
+            "house_total_area": house_total_area,
+            "house_living_area": house_living_area,
+            "house_common_area": house_common_area,
+            "apartment_share": apartment_share,
+        }
+
     def _extract_charges_table(self, page) -> (List[Dict[str, Any]], float):
         """Парсинг строк начислений с явной калибровкой вертикальных линий."""
-        # Область таблицы начислений (обычно y от 215 до 460)
         crop = page.crop((28.0, 215.0, 547.0, 460.0))
         vlines = sorted(list(set([round(l["x0"], 1) for l in crop.lines if l["width"] < 1])))
 
-        # В квитанциях МосОблЕИРЦ бывает 9 вертикальных линий (8 колонок, без перерасчетов)
-        # либо 10 линий (9 колонок, колонка перерасчетов включена)
         table = crop.extract_table(
             table_settings={
                 "explicit_vertical_lines": vlines,
@@ -182,7 +253,6 @@ class ReceiptParser(BaseClass):
             row_str = "".join([str(c or "") for c in row])
             norm = re.sub(r"\s+", "", row_str).lower()
 
-            # Смена категории
             if "жилищн" in norm and "начислен" in norm:
                 current_category = "Жилищные услуги"
                 continue
@@ -193,16 +263,13 @@ class ReceiptParser(BaseClass):
                 current_category = "Иные услуги"
                 continue
 
-            # Игнорируем добровольное страхование
             if "добровольноестрахование" in norm:
                 continue
 
-            # Извлечение итоговой суммы без добровольного страхования
             if ("всегоза" in norm or "итогокоплате" in norm) and "безучетадобровольногострахования" in norm:
                 total_without_insurance = parse_float(row[-1])
                 continue
 
-            # Пропуск строк заголовков и служебных итогов
             if (
                 "видыуслуг" in norm
                 or "всегоза" in norm
