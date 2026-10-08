@@ -19,7 +19,7 @@
   - Каскадное удаление (`ON DELETE CASCADE`) и индексы для быстрых аналитических выборок.
 
 - **Аналитика и визуализация:**
-  - Готовый Jupyter Notebook с примерами SQL-запросов и графиков (динамика платежей, сезонность отопления, потребление ресурсов, топ затратных услуг).
+  - Готовый Jupyter Notebook с примерами SQL-запросов и графиков (динамика платежей, сезонность отопления, потребление ресурсов, топ затратных услуг за все время и по годам, распределение категорий по годам).
 
 ---
 
@@ -168,13 +168,59 @@ WHERE sc.account_number = '32546-580' AND sc.service_name LIKE '%ОТОПЛЕН�
 ORDER BY r.period_date;
 ```
 
-#### 3. Топ-5 самых затратных услуг
+#### 3. Топ самых затратных услуг за весь период
 ```sql
 SELECT service_name, ROUND(SUM(total_amount), 2) AS total_sum
 FROM service_charges
 GROUP BY service_name
 ORDER BY total_sum DESC
 LIMIT 5;
+```
+
+#### 4. Топ-3 самых затратных услуг в разрезе каждого года
+```sql
+WITH year_totals AS (
+    SELECT year, SUM(total_amount) AS year_sum
+    FROM service_charges sc
+    JOIN receipts r ON sc.receipt_id = r.id
+    GROUP BY year
+),
+ranked_services AS (
+    SELECT 
+        r.year,
+        sc.service_name,
+        ROUND(SUM(sc.total_amount), 2) AS total_sum,
+        ROUND(SUM(sc.total_amount) * 100.0 / yt.year_sum, 1) AS share_percent,
+        ROW_NUMBER() OVER (PARTITION BY r.year ORDER BY SUM(sc.total_amount) DESC) AS rank
+    FROM service_charges sc
+    JOIN receipts r ON sc.receipt_id = r.id
+    JOIN year_totals yt ON r.year = yt.year
+    GROUP BY r.year, sc.service_name
+)
+SELECT year, rank, service_name, total_sum, share_percent
+FROM ranked_services
+WHERE rank <= 3
+ORDER BY year, rank;
+```
+
+#### 5. Распределение начислений по категориям услуг в разрезе годов
+```sql
+WITH year_totals AS (
+    SELECT year, SUM(total_amount) AS total_year
+    FROM service_charges sc
+    JOIN receipts r ON sc.receipt_id = r.id
+    GROUP BY year
+)
+SELECT 
+    r.year AS 'Год',
+    sc.service_category AS 'Категория',
+    ROUND(SUM(sc.total_amount), 2) AS 'Сумма, руб.',
+    ROUND(SUM(sc.total_amount) * 100.0 / yt.total_year, 1) AS 'Доля, %'
+FROM service_charges sc
+JOIN receipts r ON sc.receipt_id = r.id
+JOIN year_totals yt ON r.year = yt.year
+GROUP BY r.year, sc.service_category
+ORDER BY r.year, SUM(sc.total_amount) DESC;
 ```
 
 ---
