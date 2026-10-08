@@ -4,42 +4,52 @@
 # Name: database
 # Filename: database.py
 # Author: mbegma
-# Description: SQLite database manager for storing digitized receipts and service charges
+# Description: SQLite database manager for receipts and service charges
 # -----------------------------------------------------
 
 import sqlite3
+import logging
 from pathlib import Path
 from typing import Dict, Any, List, Optional
-import logging
-
 from src.config import config
 
 logger = logging.getLogger(config.LOGGER_NAME)
 
 
 class ReceiptsDB:
-    def __init__(self, db_path: Optional[str] = None):
-        self.db_path = Path(db_path or config.DB_PATH)
+    """Менеджер базы данных SQLite для хранения распарсенных квитанций ЕПД."""
+
+    def __init__(self, db_path: str):
+        self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.init_schema()
 
     def get_connection(self) -> sqlite3.Connection:
+        """Возвращает подключение к БД с включенными внешними ключами."""
         conn = sqlite3.connect(str(self.db_path))
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON;")
         return conn
 
     def init_schema(self) -> None:
-        """Создает таблицы и индексы в SQLite, если они еще не существуют."""
+        """Создает таблицы и индексы в SQLite, если они еще не существуют, и применяет миграции."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
 
-            # Таблица лицевых счетов
+            # Таблица лицевых счетов / паспорта помещения и дома
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS accounts (
                     account_number TEXT PRIMARY KEY,
                     payer_name TEXT,
                     address TEXT,
+                    total_area REAL,
+                    living_area REAL,
+                    registered_count INTEGER,
+                    residents_count INTEGER,
+                    house_total_area REAL,
+                    house_living_area REAL,
+                    house_common_area REAL,
+                    apartment_share REAL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """)
@@ -54,6 +64,14 @@ class ReceiptsDB:
                     year INTEGER NOT NULL,
                     month INTEGER NOT NULL,
                     total_to_pay REAL,
+                    total_area REAL,
+                    living_area REAL,
+                    registered_count INTEGER,
+                    residents_count INTEGER,
+                    house_total_area REAL,
+                    house_living_area REAL,
+                    house_common_area REAL,
+                    apartment_share REAL,
                     source_file TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(account_number, year, month),
@@ -81,6 +99,27 @@ class ReceiptsDB:
                     FOREIGN KEY(account_number) REFERENCES accounts(account_number) ON DELETE CASCADE
                 );
             """)
+
+            # Автоматическая миграция новых колонок для существующих таблиц
+            new_columns = [
+                ("total_area", "REAL"),
+                ("living_area", "REAL"),
+                ("registered_count", "INTEGER"),
+                ("residents_count", "INTEGER"),
+                ("house_total_area", "REAL"),
+                ("house_living_area", "REAL"),
+                ("house_common_area", "REAL"),
+                ("apartment_share", "REAL"),
+            ]
+            existing_acc_cols = {row[1] for row in cursor.execute("PRAGMA table_info(accounts)").fetchall()}
+            for col_name, col_type in new_columns:
+                if col_name not in existing_acc_cols:
+                    cursor.execute(f"ALTER TABLE accounts ADD COLUMN {col_name} {col_type};")
+
+            existing_rec_cols = {row[1] for row in cursor.execute("PRAGMA table_info(receipts)").fetchall()}
+            for col_name, col_type in new_columns:
+                if col_name not in existing_rec_cols:
+                    cursor.execute(f"ALTER TABLE receipts ADD COLUMN {col_name} {col_type};")
 
             # Индексы для быстрого поиска и аналитических выборок / графиков
             cursor.execute("""
@@ -119,17 +158,43 @@ class ReceiptsDB:
         source_file = receipt_data.get("source_file", "")
         services = receipt_data.get("services", [])
 
+        # Характеристики помещения и дома
+        total_area = receipt_data.get("total_area")
+        living_area = receipt_data.get("living_area")
+        registered_count = receipt_data.get("registered_count")
+        residents_count = receipt_data.get("residents_count")
+        house_total_area = receipt_data.get("house_total_area")
+        house_living_area = receipt_data.get("house_living_area")
+        house_common_area = receipt_data.get("house_common_area")
+        apartment_share = receipt_data.get("apartment_share")
+
         with self.get_connection() as conn:
             cursor = conn.cursor()
 
-            # 1. Сохраняем/обновляем лицевой счет
+            # 1. Сохраняем/обновляем лицевой счет и характеристики дома
             cursor.execute("""
-                INSERT INTO accounts (account_number, payer_name, address)
-                VALUES (?, ?, ?)
+                INSERT INTO accounts (
+                    account_number, payer_name, address,
+                    total_area, living_area, registered_count, residents_count,
+                    house_total_area, house_living_area, house_common_area, apartment_share
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(account_number) DO UPDATE SET
                     payer_name = COALESCE(excluded.payer_name, accounts.payer_name),
-                    address = COALESCE(excluded.address, accounts.address);
-            """, (account_number, payer_name, address))
+                    address = COALESCE(excluded.address, accounts.address),
+                    total_area = COALESCE(excluded.total_area, accounts.total_area),
+                    living_area = COALESCE(excluded.living_area, accounts.living_area),
+                    registered_count = COALESCE(excluded.registered_count, accounts.registered_count),
+                    residents_count = COALESCE(excluded.residents_count, accounts.residents_count),
+                    house_total_area = COALESCE(excluded.house_total_area, accounts.house_total_area),
+                    house_living_area = COALESCE(excluded.house_living_area, accounts.house_living_area),
+                    house_common_area = COALESCE(excluded.house_common_area, accounts.house_common_area),
+                    apartment_share = COALESCE(excluded.apartment_share, accounts.apartment_share);
+            """, (
+                account_number, payer_name, address,
+                total_area, living_area, registered_count, residents_count,
+                house_total_area, house_living_area, house_common_area, apartment_share
+            ))
 
             # 2. Проверяем, существует ли уже квитанция за этот период
             cursor.execute("""
@@ -140,24 +205,44 @@ class ReceiptsDB:
 
             if row:
                 receipt_id = row["id"]
-                # Обновляем метаданные квитанции
                 cursor.execute("""
                     UPDATE receipts SET
                         period = ?,
                         period_date = ?,
                         total_to_pay = ?,
+                        total_area = ?,
+                        living_area = ?,
+                        registered_count = ?,
+                        residents_count = ?,
+                        house_total_area = ?,
+                        house_living_area = ?,
+                        house_common_area = ?,
+                        apartment_share = ?,
                         source_file = ?
                     WHERE id = ?;
-                """, (period, period_date, total_to_pay, source_file, receipt_id))
+                """, (
+                    period, period_date, total_to_pay,
+                    total_area, living_area, registered_count, residents_count,
+                    house_total_area, house_living_area, house_common_area, apartment_share,
+                    source_file, receipt_id
+                ))
                 # Удаляем старые начисления для чистой перезаписи
                 cursor.execute("DELETE FROM service_charges WHERE receipt_id = ?;", (receipt_id,))
                 logger.info(f"Overwriting existing receipt id={receipt_id} for {account_number} ({period})")
             else:
                 cursor.execute("""
                     INSERT INTO receipts (
-                        account_number, period, period_date, year, month, total_to_pay, source_file
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?);
-                """, (account_number, period, period_date, year, month, total_to_pay, source_file))
+                        account_number, period, period_date, year, month, total_to_pay,
+                        total_area, living_area, registered_count, residents_count,
+                        house_total_area, house_living_area, house_common_area, apartment_share,
+                        source_file
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """, (
+                    account_number, period, period_date, year, month, total_to_pay,
+                    total_area, living_area, registered_count, residents_count,
+                    house_total_area, house_living_area, house_common_area, apartment_share,
+                    source_file
+                ))
                 receipt_id = cursor.lastrowid
                 logger.info(f"Inserted new receipt id={receipt_id} for {account_number} ({period})")
 
