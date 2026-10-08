@@ -31,7 +31,7 @@ class Config:
     # region CONST
     IS_DEBUG = config.getboolean("TOOL", "is_debug")
     IS_LOGGING = config.getboolean("TOOL", "is_logging")
-    LOGGER_NAME = "app"
+    LOGGER_NAME = "pdf_table_parcer"
     # endregion
 
     # region DIR
@@ -48,19 +48,3 @@ class Config:
     # region DB CONNECT
     DB_PATH = config.get("DB_CONNECT", "db_path", fallback=str(ROOT_DIR / "db" / "receipts.db"))
     create_dir(Path(DB_PATH).parent)
-
-    IS_USE_DIRECTORY = config.getboolean("DB_CONNECT", "is_use_dir")
-    if IS_USE_DIRECTORY:
-        DB_CONNECTION_NAME = f'{config["DB_CONNECT"]["connection_dir"]}{sep}{config["DB_CONNECT"]["connection_name"]}'
-    else:
-        DB_CONNECTION_NAME = f'{config["DB_CONNECT"]["connection_name"]}'
-    DB_SCHEMA_NAME = config["DB_CONNECT"]["schema_name"]
-    # endregion
-
-    def get_full_name(self, name, is_use_schema=True) -> str:
-        prefix = Path(self.MAIN_DIR) / Path(self.DB_CONNECTION_NAME)
-        if is_use_schema:
-            postfix = Path(f"{self.DB_SCHEMA_NAME}.{name}")
-        else:
-            postfix = Path(name)
-        return str(prefix / postfix)
